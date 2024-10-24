@@ -1,0 +1,136 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+
+- stage: Build
+
+  jobs:
+  - job: build
+    displayName: Build app
+
+    steps:
+    
+    - task: UseDotNet@2
+      displayName: Install .NET SDK
+      inputs:
+        packageType: 'sdk'
+        version: '6.0.x'
+        
+    - script: |    
+        dotnet publish -c Release -o "$(Build.ArtifactStagingDirectory)/frontend"
+      displayName: Build Blazor frontend
+      workingDirectory: $(System.DefaultWorkingDirectory)/Client
+      
+    - script: |  
+        dotnet publish -c Release -o "$(Build.ArtifactStagingDirectory)/api"
+      displayName: Build Azure Functions API
+      workingDirectory: $(System.DefaultWorkingDirectory)/Api
+      
+    - script: |
+        dotnet build -c Release -o "$(Build.ArtifactStagingDirectory)/tests"
+      displayName: Build Playwright tests
+      workingDirectory: $(System.DefaultWorkingDirectory)/PlaywrightTests
+
+    - task: PublishBuildArtifacts@1
+      displayName: Publish artifacts
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+        
+- stage: deploy_staging
+  displayName: Deploy to staging
+
+  jobs:
+    - deployment: deploy
+      displayName: Deploy and test
+      environment: Staging
+      variables:
+      - group: Azure-Static-Web-Apps-calm-coast-0df39b910-variable-group
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+
+            - download: none
+            - checkout: none
+
+            - task: DownloadBuildArtifacts@1
+              displayName: Download artifacts
+              inputs:
+                buildType: current
+                downloadType: single
+                artifactName: drop
+                downloadPath: $(System.ArtifactsDirectory)
+
+            - task: AzureStaticWebApp@0
+              displayName: Deploy to staging environment
+              inputs:
+                app_location: frontend/wwwroot
+                api_location: api
+                skip_app_build: true
+                skip_api_build: true
+                verbose: true
+                azure_static_web_apps_api_token: $(AZURE_STATIC_WEB_APPS_API_TOKEN_CALM_COAST_0DF39B910)
+                deployment_environment: staging
+                workingDirectory: $(System.ArtifactsDirectory)/drop
+
+            - task: UseDotNet@2
+              displayName: Install .NET SDK
+              inputs:
+                packageType: 'sdk'
+                version: '6.0.x'
+
+            - script: |
+                chmod -R a+x $(System.ArtifactsDirectory)/drop/tests
+                sudo --preserve-env=PLAYWRIGHT_BROWSERS_PATH pwsh $(System.ArtifactsDirectory)/drop/tests/playwright.ps1 install --with-deps chromium
+                dotnet test $(System.ArtifactsDirectory)/drop/tests/PlaywrightTests.dll --logger trx
+              displayName: Run Playwright tests on staging app
+              env:
+                PLAYWRIGHT_BROWSERS_PATH: $(Build.SourcesDirectory)/browsers
+                LOGIN_PASSWORD: $(LOGIN_PASSWORD)
+            
+            - task: PublishTestResults@2
+              condition: succeededOrFailed()
+              inputs:
+                testRunner: VSTest
+                testResultsFiles: '**/*.trx'
+
+- stage: deploy_production
+  displayName: Deploy to production
+
+  jobs:
+  - deployment: deploy
+    displayName: Deploy
+    environment: Production
+    variables:
+    - group: Azure-Static-Web-Apps-calm-coast-0df39b910-variable-group
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: none
+          - checkout: none
+
+          - task: DownloadBuildArtifacts@1
+            displayName: Download artifacts
+            inputs:
+              buildType: current
+              downloadType: single
+              artifactName: drop
+              downloadPath: $(System.ArtifactsDirectory)
+
+          - task: AzureStaticWebApp@0
+            displayName: Deploy to production environment
+            inputs:
+              app_location: frontend/wwwroot
+              api_location: api
+              skip_app_build: true
+              skip_api_build: true
+              verbose: true
+              azure_static_web_apps_api_token: $(AZURE_STATIC_WEB_APPS_API_TOKEN_CALM_COAST_0DF39B910)
+              workingDirectory: $(System.ArtifactsDirectory)/drop
